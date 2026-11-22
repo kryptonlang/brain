@@ -925,6 +925,7 @@ func appendRunTo(acc, text, fg, bg, font) {
   // escape/Unicode run from the pty). Never hand nil to initWithString:.
   let value = nsString(text)
   if value == 0 { value = nsString("?") }
+  if value == 0 { emit "1" }
   let fragment = msg_1(msg(cls("NSAttributedString"), "alloc"), "initWithString:", value)
   msg_1(acc, "appendAttributedString:", fragment)
   msg(fragment, "release")
@@ -1489,7 +1490,10 @@ func rebuildRecentMenu(menu) {
 }
 func dirOf(p) { let n = len(p)  let i = n - 1  while i >= 0 { if p[i] == "/" { emit substring(p, 0, i) }  i = i - 1 }  emit p }
 
-func canonicalPath(path) { emit msg(msg(nsString(path), "stringByResolvingSymlinksInPath"), "UTF8String") }
+func canonicalPath(path) {
+  let resolved = msg(nsString(path), "stringByResolvingSymlinksInPath")
+  emit msg(msg(resolved, "precomposedStringWithCanonicalMapping"), "UTF8String")
+}
 func readableText(text) {
   if text == 0 { emit 0 }
   let nul = msg_2(cls("NSCharacterSet"), "characterSetWithRange:", 0, 1)
@@ -2771,6 +2775,15 @@ func editorRegressionTests() {
   regressionAssert(indexOf(gridRender(terminalState, 8, 2), "MAIN 🦋") >= 0, "Stem shrink retains visible text")
   print("PASS: Stem grid resize, alternate screen, bracketed paste, Unicode")
   let app = cocoaInit()
+  let invalidRun = substring("🦋", 0, 1)
+  regressionAssert(nsString(invalidRun) == 0, "Terminal fixture has invalid UTF-8")
+  let rendered = allocInit("NSMutableAttributedString")
+  let terminalFont = cocoaMonoFont(12)
+  appendRunTo(rendered, invalidRun, themeText(), 0, terminalFont)
+  appendRunTo(rendered, "OK", themeText(), 0, terminalFont)
+  regressionAssert(msg_1(msg(rendered, "string"), "isEqualToString:", nsString("?OK")) == 1, "Terminal replaces invalid UTF-8 and keeps rendering")
+  msg(rendered, "release")
+  print("PASS: terminal rendering tolerates invalid UTF-8")
   gitStatusRegression()
   print("PASS: Git Explorer decorations parse modified, untracked, ignored, and renamed paths")
   let win = cocoaWindow(app, "Regression", 600, 400)

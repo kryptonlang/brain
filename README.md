@@ -18,6 +18,40 @@ Krypton functions used directly as Objective-C method IMPs.
 brew install --cask t3m3d/krypton/brain
 ```
 
+## Linux preview
+
+The Linux entry point is `brain-linux.ks`, written in Krypton with an
+Objective-K document model and native Wayland rendering. It opens one text
+file, edits with the keyboard, saves atomically, checks for external changes,
+and guards unsaved work on quit. Ctrl+O opens, Ctrl+S saves,
+Ctrl+Shift+S saves under a new name, and Ctrl+Q quits.
+
+Build on Linux x86_64 using a Krypton installation that includes
+`objk_runtime.k` and `wayland.k` with text-input-v3 helpers.
+
+```sh
+KRYPTON_ROOT=/path/to/krypton kr build_linux.ks
+./dist/brain-linux/brain /path/to/file.ks
+kr install_linux.ks  # installs under ~/.local
+```
+
+The build also creates `dist/brain-linux-x86_64.tar.gz`. A running Wayland
+compositor is required. Text-input-v3 supplies UTF-8 input where supported.
+The fallback keyboard map uses US ASCII, and the bitmap font displays
+non-ASCII characters as placeholders while retaining their bytes on save.
+Documents are limited to 64 KiB. Tabs, selection, clipboard, undo, the Explorer,
+Git, extensions, and the terminal remain macOS features.
+
+Linux regressions can be run after compiling `tests/linux_document.ks` and
+creating an empty fixture directory. The protocol test launches the actual
+editor against an isolated socket and verifies fragmented events, UTF-8 saves,
+resize handling, shared-memory reuse, and unsaved quit protection.
+
+```sh
+./linux-document-test /tmp/brain-fixtures
+python3 tests/linux_wayland.py ./dist/brain-linux/brain
+```
+
 ## Build from source
 Needs a [Krypton](https://github.com/t3m3d/krypton) checkout (the toolchain):
 ```

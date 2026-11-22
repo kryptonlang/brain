@@ -28,10 +28,10 @@ func brainLinuxNewId() {
 
 // Theme (packed 0xRRGGBB)
 let BRAIN_CANVAS  = 1445919     // 0x16101f  background
-let BRAIN_BAR     = 2173227     // 0x21292b  title / status bar
+let BRAIN_BAR     = 2169643     // 0x211b2b  title / status bar
 let BRAIN_ACCENT  = 10912215    // 0xa681d7  caret / accent
 let BRAIN_INK     = 15919871    // 0xf2eaff  text
-let BRAIN_MUTED   = 9275536     // 0x8d84a8  line numbers
+let BRAIN_MUTED   = 9274536     // 0x8d84a8  line numbers
 let BRAIN_LINEH   = 18
 let BRAIN_FONT_W  = 8
 let BRAIN_FONT_H  = 16
@@ -158,14 +158,48 @@ func brainLinuxVisible(text, start, limit) {
     emit substring(text, start, last)
 }
 
-// Send the IME the full surrounding text so it can compose (spec allows
-// this; documents are capped at 64 KiB).
+// Keep the surrounding text within the protocol's 4000-byte limit.
 func brainLinuxSyncSurround(fd, ti) {
     if ti == 0 { emit 1 }
     let source = brainLinuxText(brainLinuxArena, brainLinuxDoc, "source")
-    let cur = okKGet(brainLinuxArena, brainLinuxDoc, "cursor")
-    wlTextInputSetSurrounding(fd, ti, source, cur, cur)
+    let cursor = okKGet(brainLinuxArena, brainLinuxDoc, "cursor")
+    if brainLinuxPrompt != "" { source = brainLinuxInput  cursor = len(source) }
+    let first = cursor - 1800
+    if first < 0 { first = 0 }
+    while first < cursor && charCode(source[first]) >= 128 && charCode(source[first]) < 192 { first += 1 }
+    let last = cursor + 1800
+    if last > len(source) { last = len(source) }
+    while last < len(source) && charCode(source[last]) >= 128 && charCode(source[last]) < 192 { last -= 1 }
+    wlTextInputSetSurrounding(fd, ti, substring(source, first, last), cursor - first, cursor - first)
     wlTextInputCommit(fd, ti)
+    emit 1
+}
+
+func brainLinuxCommitText(text, before, after) {
+    if brainLinuxPrompt != "" {
+        let length = len(brainLinuxInput)
+        if before > length || after != 0 { emit 0 }
+        let first = length - before
+        if first < length && charCode(brainLinuxInput[first]) >= 128 && charCode(brainLinuxInput[first]) < 192 { emit 0 }
+        if first + len(text) > 4096 { emit 0 }
+        let builder = sbNew()
+        builder = sbAppend(builder, substring(brainLinuxInput, 0, first))
+        builder = sbAppend(builder, text)
+        brainLinuxInput = sbToString(builder)
+    } else {
+        let source = brainLinuxText(brainLinuxArena, brainLinuxDoc, "source")
+        let cursor = okKGet(brainLinuxArena, brainLinuxDoc, "cursor")
+        if before > cursor || after > len(source) - cursor { emit 0 }
+        let first = cursor - before
+        let last = cursor + after
+        if first < len(source) && charCode(source[first]) >= 128 && charCode(source[first]) < 192 { emit 0 }
+        if last < len(source) && charCode(source[last]) >= 128 && charCode(source[last]) < 192 { emit 0 }
+        if first != last || text != "" {
+            if brainLinuxReplace(brainLinuxArena, brainLinuxDoc, first, last, text) == 0 { emit 0 }
+        }
+    }
+    brainLinuxQuitArmed = 0
+    brainLinuxNotice = ""
     emit 1
 }
 
@@ -233,13 +267,13 @@ func brainLinuxDraw(px, fbW, fbH, font, width, height) {
             }
             brainLinuxCaretX = sufX
             brainLinuxCaretY = y
-            fbFillRect(px, fbW, sufX, y, 2, BRAIN_FONT_H, BRAIN_ACCENT)
+            if sufX >= 0 && sufX + 2 <= width && y + BRAIN_FONT_H <= height { fbFillRect(px, fbW, sufX, y, 2, BRAIN_FONT_H, BRAIN_ACCENT) }
         } else {
             let visible = brainLinuxVisible(brainWlAscii(substring(source, first, last)), brainLinuxLeft, columns)
             if visible != "" { fbDrawText(px, fbW, fbH, font, BRAIN_TEXT_X, y, visible, BRAIN_INK) }
             if row == line && brainLinuxPrompt == "" {
                 let x = BRAIN_TEXT_X + (column - brainLinuxLeft) * BRAIN_FONT_W
-                fbFillRect(px, fbW, x, y, 2, BRAIN_FONT_H, BRAIN_ACCENT)
+                if x >= 0 && x + 2 <= width && y + BRAIN_FONT_H <= height { fbFillRect(px, fbW, x, y, 2, BRAIN_FONT_H, BRAIN_ACCENT) }
                 brainLinuxCaretX = x
                 brainLinuxCaretY = y
             }
@@ -259,198 +293,220 @@ func brainLinuxDraw(px, fbW, fbH, font, width, height) {
     emit 1
 }
 
+func brainLinuxFrameNew(fd, shm) {
+    let capacity = 4096 * 2160 * 4
+    let memory = memfdCreate(capacity)
+    if brainWlSyscallFailed(memory) == 1 { emit 0 }
+    let pixels = mmapShared(memory, capacity)
+    if brainWlSyscallFailed(pixels) == 1 { sockClose(memory)  emit 0 }
+    let pool = brainLinuxNewId()
+    wlCreatePool(fd, shm, pool, memory, capacity)
+    let frame = structNew()
+    frame = setField(frame, "memory", memory)
+    frame = setField(frame, "pixels", pixels)
+    frame = setField(frame, "pool", pool)
+    frame = setField(frame, "buffer", 0)
+    frame = setField(frame, "width", 0)
+    frame = setField(frame, "height", 0)
+    emit setField(frame, "busy", 0)
+}
+
+func brainLinuxPresentFrame(fd, surface, frame, font, width, height) {
+    let buffer = getField(frame, "buffer")
+    if buffer == 0 || getField(frame, "width") != width || getField(frame, "height") != height {
+        if buffer != 0 { wlBufferDestroy(fd, buffer) }
+        buffer = brainLinuxNewId()
+        wlPoolCreateBuffer(fd, getField(frame, "pool"), buffer, 0, width, height, width * 4, 1)
+        frame = setField(frame, "buffer", buffer)
+        frame = setField(frame, "width", width)
+        frame = setField(frame, "height", height)
+    }
+    brainLinuxDraw(getField(frame, "pixels"), width, height, font, width, height)
+    wlSurfaceAttach(fd, surface, buffer, 0, 0)
+    wlDamage(fd, surface, 0, 0, width, height)
+    wlCommit(fd, surface)
+    emit setField(frame, "busy", 1)
+}
+
 func brainLinuxWindow(smoke) {
     let fd = wlConnect()
-    if fd < 0 { print("Could not connect to Wayland.")  emit 1 }
-    let REG = brainLinuxNewId()
-    wlGetRegistry(fd, REG)
-    // wl_display.sync — the compositor answers with a callback done event
-    // AFTER sending the full global list. Without it, one recv() may return
-    // only the first global (TCP gives no multi-packet atomicity) and we
-    // would bind to id -1.
-    let SYNCB = brainLinuxNewId()
-    let rb = bufNew(16384)
-    let rn = wlSyncRegistry(fd, SYNCB, rb, 16384)
-    if rn < 0 { print("Wayland registry handshake failed.")  sockClose(fd)  emit 1 }
-    if rn <= 0 { print("Wayland registry handshake failed.")  sockClose(fd)  emit 1 }
-    let compName = wlRegistryFind(rb, rn, "wl_compositor")
-    let shmName = wlRegistryFind(rb, rn, "wl_shm")
-    let wmName = wlRegistryFind(rb, rn, "xdg_wm_base")
-    let seatName = wlRegistryFind(rb, rn, "wl_seat")
-    if compName < 0 || shmName < 0 || wmName < 0 || seatName < 0 {
+    if brainWlSyscallFailed(fd) == 1 { print("Could not connect to Wayland.")  emit 1 }
+    let registry = brainLinuxNewId()
+    wlGetRegistry(fd, registry)
+    let syncId = brainLinuxNewId()
+    let messages = bufNew(65536)
+    let scratch = bufNew(65536)
+    let registrySize = brainWlRegistry(fd, registry, syncId, messages, scratch)
+    if registrySize == 0 { print("Wayland registry handshake failed.")  sockClose(fd)  emit 1 }
+    let compositorName = wlRegistryFind(messages, registrySize, "wl_compositor")
+    let shmName = wlRegistryFind(messages, registrySize, "wl_shm")
+    let wmName = wlRegistryFind(messages, registrySize, "xdg_wm_base")
+    let seatName = wlRegistryFind(messages, registrySize, "wl_seat")
+    if compositorName < 0 || shmName < 0 || wmName < 0 {
         print("Wayland compositor is missing required globals.")  sockClose(fd)  emit 1
     }
-    let COMP = brainLinuxNewId(); wlBind(fd, REG, compName, "wl_compositor", 4, COMP)
-    let SHM  = brainLinuxNewId(); wlBind(fd, REG, shmName, "wl_shm", 1, SHM)
-    let WM   = brainLinuxNewId(); wlBind(fd, REG, wmName, "xdg_wm_base", 1, WM)
-    let SEAT = brainLinuxNewId(); wlBind(fd, REG, seatName, "wl_seat", 5, SEAT)
-    let KB   = brainLinuxNewId(); wlGetKeyboard(fd, SEAT, KB)
-    // zwp_text_input_manager_v3 is optional: without it, typed text falls
-    // back to the ASCII keymap (degraded mode).
-    let tiName = wlRegistryFind(rb, rn, "zwp_text_input_manager_v3")
-    let TINPM = 0
-    if tiName >= 0 {
-        TINPM = brainLinuxNewId()
-        wlBind(fd, REG, tiName, "zwp_text_input_manager_v3", 1, TINPM)
+    let compositor = brainLinuxNewId()
+    wlBind(fd, registry, compositorName, "wl_compositor", 4, compositor)
+    let shm = brainLinuxNewId()
+    wlBind(fd, registry, shmName, "wl_shm", 1, shm)
+    let wm = brainLinuxNewId()
+    wlBind(fd, registry, wmName, "xdg_wm_base", 1, wm)
+    let seat = 0
+    let keyboard = 0
+    if seatName >= 0 {
+        seat = brainLinuxNewId()
+        wlBind(fd, registry, seatName, "wl_seat", 5, seat)
     }
-    let SURF = brainLinuxNewId(); wlCreateSurface(fd, COMP, SURF)
-    let XS   = brainLinuxNewId(); wlGetXdgSurface(fd, WM, XS, SURF)
-    let TOP  = brainLinuxNewId(); wlGetToplevel(fd, XS, TOP)
-    wlSetTitle(fd, TOP, "Brain")
-    wlSetAppId(fd, TOP, "brain")
-    let TINP = 0
-    if TINPM != 0 {
-        TINP = brainLinuxNewId()
-        wlGetTextInput(fd, TINPM, TINP, SEAT)
+    let managerName = wlRegistryFind(messages, registrySize, "zwp_text_input_manager_v3")
+    let manager = 0
+    if managerName >= 0 && seat != 0 {
+        manager = brainLinuxNewId()
+        wlBind(fd, registry, managerName, "zwp_text_input_manager_v3", 1, manager)
     }
-    wlCommit(fd, SURF)
+    let surface = brainLinuxNewId()
+    wlCreateSurface(fd, compositor, surface)
+    let shellSurface = brainLinuxNewId()
+    wlGetXdgSurface(fd, wm, shellSurface, surface)
+    let top = brainLinuxNewId()
+    wlGetToplevel(fd, shellSurface, top)
+    wlSetTitle(fd, top, "Brain")
+    wlSetAppId(fd, top, "brain")
+    _wlSend2(fd, top, 7, 4096, 2160)
+    _wlSend2(fd, top, 8, 320, 160)
+    let input = 0
+    if manager != 0 {
+        input = brainLinuxNewId()
+        wlGetTextInput(fd, manager, input, seat)
+    }
+    wlCommit(fd, surface)
 
-    let W = 900
-    let H = 620
+    // Alternate two fixed allocations. A compositor may retain the current
+    // buffer until its replacement arrives.
+    let firstFrame = brainLinuxFrameNew(fd, shm)
+    let secondFrame = brainLinuxFrameNew(fd, shm)
+    if firstFrame == 0 || secondFrame == 0 { sockClose(fd)  emit 1 }
+    let width = 900
+    let height = 620
+    let dirty = 1
+    let configured = 0
+    let modifiers = 0
+    let activeInput = 0
     let kmap = brainWlKeymap()
     let font = wlFontLoad()
+    let pendingText = ""
+    let pendingPreedit = ""
+    let pendingBefore = 0
+    let pendingAfter = 0
     let running = 1
-    let configured = 0
-    let kbDepressed = 0
-    let textActive = 0
-    let prevBuf = 0
-    let prevPool = 0
-    let prevMfd = 0
-    let eb = bufNew(65536)
+    let result = 0
     while running == 1 {
-        let en = wlRecvInto(fd, eb, 65536)
-        if en <= 0 { running = 0 }
-        else {
-            let off = 0
-            let dirty = 0
-            while off + 8 <= en {
-                let obj = wlObject(eb, off)
-                let op = wlOpcode(eb, off)
-                let s = wlSize(eb, off)
-                if s < 8 { off = en }
-                else {
-                    if obj == WM && op == 0 { wlPong(fd, WM, wlU32(eb, off + 8)) }
-                    if obj == XS && op == 0 { wlAckConfigure(fd, XS, wlU32(eb, off + 8))  dirty = 1  configured = 1 }
-                    if obj == TOP && op == 0 {
-                        let cw = wlU32(eb, off + 8)
-                        let chh = wlU32(eb, off + 12)
-                        if cw > 0 && chh > 0 { W = cw  H = chh }
-                    }
-                    if obj == TOP && op == 1 {
-                        running = brainLinuxQuit()
-                        if running == 1 { dirty = 1 }
-                    }
-                    if obj == 1 && op == 0 { print("Wayland protocol error")  running = 0 }
-                    if obj == KB && op == 0 {
-                        // keyboard focus gained -- arm text-input
-                        if TINP != 0 {
-                            wlTextInputEnable(fd, TINP)
-                            wlTextInputSetContentType(fd, TINP, 0, 0)
-                            brainLinuxSyncSurround(fd, TINP)
-                            wlTextInputSetCursorRectangle(fd, TINP, brainLinuxCaretX, brainLinuxCaretY, 2, BRAIN_FONT_H)
-                            wlTextInputCommit(fd, TINP)
-                        }
-                    }
-                    if obj == KB && op == 1 { textActive = 0  brainLinuxPreedit = ""  dirty = 1 }
-                    if obj == KB && op == 3 {
-                        let state = wlU32(eb, off + 20)
-                        if state == 1 {
-                            let kc = wlKeyToKc(wlU32(eb, off + 16))
-                            let shift = kbDepressed % 2
-                            let ctrl = (kbDepressed / 4) % 2
-                            let symbol = brainWlKeysym(kmap, kc, shift)
-                            if textActive == 1 && ctrl == 0 && symbol >= 32 && symbol < 127 {
-                                symbol = 0   // text-input delivers printable text
-                            }
-                            if symbol != 0 {
-                                running = brainLinuxAction(symbol, kbDepressed)
-                                if running == 1 { dirty = 1 }
-                            }
-                        }
-                    }
-                    if obj == KB && op == 4 { kbDepressed = wlU32(eb, off + 12) % 16 }
-                    if obj == TINP && op == 0 { textActive = 1 }
-                    if obj == TINP && op == 1 { textActive = 0  brainLinuxPreedit = ""  dirty = 1 }
-                    if obj == TINP && op == 2 {
-                        brainLinuxPreedit = wlTextInputEventText(eb, off)
-                        dirty = 1
-                    }
-                    if obj == TINP && op == 3 {
-                        let text = wlTextInputEventText(eb, off)
-                        if brainLinuxPrompt != "" {
-                            if len(brainLinuxInput) + len(text) < 4096 {
-                                let builder = sbNew()
-                                builder = sbAppend(builder, brainLinuxInput)
-                                builder = sbAppend(builder, text)
-                                brainLinuxInput = sbToString(builder)
-                            }
-                            brainLinuxNotice = ""
-                        } else {
-                            let cur = okKGet(brainLinuxArena, brainLinuxDoc, "cursor")
-                            if brainLinuxReplace(brainLinuxArena, brainLinuxDoc, cur, cur, text) == 0 {
-                                brainLinuxNotice = "Document limit is 64 KiB"
-                            } else { brainLinuxNotice = "" }
-                        }
-                        brainLinuxPreedit = ""
-                        brainLinuxSyncSurround(fd, TINP)
-                        dirty = 1
-                    }
-                    if obj == TINP && op == 4 {
-                        let before = wlU32(eb, off + 8)
-                        let after = wlU32(eb, off + 12)
-                        if brainLinuxPrompt != "" {
-                            // prompt is end-anchored: only the prefix side exists
-                            if before > 0 && before <= len(brainLinuxInput) {
-                                brainLinuxInput = substring(brainLinuxInput, 0, len(brainLinuxInput) - before)
-                            }
-                        } else {
-                            let source = brainLinuxText(brainLinuxArena, brainLinuxDoc, "source")
-                            let cur = okKGet(brainLinuxArena, brainLinuxDoc, "cursor")
-                            let from = cur - before
-                            if from < 0 { from = 0 }
-                            let to = cur + after
-                            if to > len(source) { to = len(source) }
-                            if from < to {
-                                if brainLinuxReplace(brainLinuxArena, brainLinuxDoc, from, to, "") == 0 {
-                                    brainLinuxNotice = "Document limit is 64 KiB"
-                                } else { brainLinuxNotice = "" }
-                            }
-                        }
-                        brainLinuxSyncSurround(fd, TINP)
-                        dirty = 1
-                    }
-                    // op == 5 (done): the IM events above were applied already
-                    off = off + s
-                }
+        let size = brainWlReadMessage(fd, messages, scratch)
+        if size == 0 { result = 1  break }
+        let obj = wlObject(messages, 0)
+        let op = wlOpcode(messages, 0)
+        if obj == 1 && op == 0 { print("Wayland protocol error")  result = 1  break }
+        if obj == wm && op == 0 && size == 12 { wlPong(fd, wm, wlU32(messages, 8)) }
+        if obj == shellSurface && op == 0 && size == 12 {
+            wlAckConfigure(fd, shellSurface, wlU32(messages, 8))
+            dirty = 1
+            configured = 1
+        }
+        if obj == top && op == 0 && size >= 20 {
+            let nextWidth = wlU32(messages, 8)
+            let nextHeight = wlU32(messages, 12)
+            if nextWidth > 0 { width = nextWidth }
+            if nextHeight > 0 { height = nextHeight }
+            if width < 64 || height < 80 || width > 4096 || height > 2160 {
+                print("Wayland window size is outside supported bounds.")  result = 1  break
             }
-            if dirty == 1 && running == 1 && configured == 1 {
-                // paint a fresh frame (ids never reused)
-                if prevBuf != 0 { wlBufferDestroy(fd, prevBuf)  wlPoolDestroy(fd, prevPool)  sockClose(prevMfd) }
-                let stride = W * 4
-                let sz = stride * H
-                let m = memfdCreate(sz)
-                let px = mmapShared(m, sz)
-                brainLinuxDraw(px, W, H, font, W, H)
-                let pool = brainLinuxNewId()
-                let buf = brainLinuxNewId()
-                wlCreatePool(fd, SHM, pool, m, sz)
-                wlPoolCreateBuffer(fd, pool, buf, 0, W, H, stride, 1)
-                wlSurfaceAttach(fd, SURF, buf, 0, 0)
-                wlDamage(fd, SURF, 0, 0, W, H)
-                wlCommit(fd, SURF)
-                if TINP != 0 {
-                    wlTextInputSetCursorRectangle(fd, TINP, brainLinuxCaretX, brainLinuxCaretY, 2, BRAIN_FONT_H)
-                    wlTextInputCommit(fd, TINP)
-                }
-                prevBuf = buf
-                prevPool = pool
-                prevMfd = m
-                if smoke == 1 { print("Brain mapped and drew its Wayland editor window")  running = 0 }
+            dirty = 1
+        }
+        if obj == top && op == 1 {
+            running = brainLinuxQuit()
+            if running == 1 { dirty = 1 }
+        }
+        if op == 0 && obj == getField(firstFrame, "buffer") { firstFrame = setField(firstFrame, "busy", 0) }
+        if op == 0 && obj == getField(secondFrame, "buffer") { secondFrame = setField(secondFrame, "busy", 0) }
+        if obj == seat && seat != 0 && op == 0 && size == 12 {
+            let capabilities = wlU32(messages, 8)
+            if capabilities / 2 % 2 == 1 && keyboard == 0 {
+                keyboard = brainLinuxNewId()
+                wlGetKeyboard(fd, seat, keyboard)
             }
         }
+        if obj == keyboard && keyboard != 0 {
+            if op == 2 { modifiers = 0 }
+            if op == 4 && size == 28 {
+                modifiers = brainWlModifiers(wlU32(messages, 12), wlU32(messages, 16), wlU32(messages, 20))
+            }
+            if op == 3 && size == 24 && wlU32(messages, 20) == 1 {
+                let symbol = brainWlKeysym(kmap, wlKeyToKc(wlU32(messages, 16)), modifiers % 2)
+                if modifiers / 2 % 2 == 1 {
+                    if symbol >= 97 && symbol <= 122 { symbol -= 32 }
+                    else if symbol >= 65 && symbol <= 90 { symbol += 32 }
+                }
+                let control = modifiers / 4 % 2
+                if activeInput == 1 && control == 0 && symbol >= 32 && symbol < 127 { symbol = 0 }
+                if symbol != 0 {
+                    running = brainLinuxAction(symbol, modifiers)
+                    dirty = 1
+                    if activeInput == 1 && running == 1 { brainLinuxSyncSurround(fd, input) }
+                }
+            }
+        }
+        if obj == input && input != 0 {
+            if op == 0 {
+                activeInput = 1
+                wlTextInputEnable(fd, input)
+                wlTextInputSetContentType(fd, input, 0, 0)
+                brainLinuxSyncSurround(fd, input)
+            }
+            if op == 1 {
+                activeInput = 0
+                brainLinuxPreedit = ""
+                pendingText = ""
+                pendingPreedit = ""
+                pendingBefore = 0
+                pendingAfter = 0
+                dirty = 1
+            }
+            if op == 2 { pendingPreedit = brainWlEventText(messages, size) }
+            if op == 3 { pendingText = brainWlEventText(messages, size) }
+            if op == 4 && size == 16 {
+                pendingBefore = wlU32(messages, 8)
+                pendingAfter = wlU32(messages, 12)
+            }
+            if op == 5 && activeInput == 1 {
+                if brainLinuxCommitText(pendingText, pendingBefore, pendingAfter) == 0 {
+                    brainLinuxNotice = "Input change exceeds document bounds"
+                }
+                brainLinuxPreedit = pendingPreedit
+                pendingText = ""
+                pendingPreedit = ""
+                pendingBefore = 0
+                pendingAfter = 0
+                dirty = 1
+                brainLinuxSyncSurround(fd, input)
+            }
+        }
+        if dirty == 1 && running == 1 && configured == 1 && (getField(firstFrame, "busy") == 0 || getField(secondFrame, "busy") == 0) {
+            if getField(firstFrame, "busy") == 0 {
+                firstFrame = brainLinuxPresentFrame(fd, surface, firstFrame, font, width, height)
+            } else {
+                secondFrame = brainLinuxPresentFrame(fd, surface, secondFrame, font, width, height)
+            }
+            dirty = 0
+            if input != 0 && activeInput == 1 {
+                wlTextInputSetCursorRectangle(fd, input, brainLinuxCaretX, brainLinuxCaretY, 2, BRAIN_FONT_H)
+                wlTextInputCommit(fd, input)
+            }
+            if smoke == 1 { print("Brain mapped and drew its Wayland editor window")  running = 0 }
+        }
     }
+    sockClose(getField(firstFrame, "memory"))
+    sockClose(getField(secondFrame, "memory"))
     sockClose(fd)
-    emit 0
+    emit result
 }
 
 just run {

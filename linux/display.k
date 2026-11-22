@@ -119,3 +119,82 @@ func brainWlKeysym(kmap, kc, shift) {
     if c == 48 { emit 41 }    // 0  -> )
     emit c
 }
+
+// Wayland messages can span multiple socket reads.
+func brainWlReadExact(fd, target, offset, count, scratch) {
+    let used = 0
+    while used < count {
+        let received = sockRecv(fd, scratch, count - used)
+        if brainWlSyscallFailed(received) == 1 { emit 0 }
+        if received == 0 { emit 0 }
+        let i = 0
+        while i < received {
+            bufSetByte(target, offset + used + i, bufGetByte(scratch, i))
+            i += 1
+        }
+        used += received
+    }
+    emit 1
+}
+
+func brainWlReadMessage(fd, target, scratch) {
+    if brainWlReadExact(fd, target, 0, 8, scratch) == 0 { emit 0 }
+    let size = wlSize(target, 0)
+    if size < 8 || size > 65532 || size % 4 != 0 { emit 0 }
+    if brainWlReadExact(fd, target, 8, size - 8, scratch) == 0 { emit 0 }
+    emit size
+}
+
+func brainWlRegistry(fd, registry, syncId, target, scratch) {
+    wlSync(fd, syncId)
+    let message = bufNew(65536)
+    let used = 0
+    while used < 65536 {
+        let size = brainWlReadMessage(fd, message, scratch)
+        if size == 0 { emit 0 }
+        if wlObject(message, 0) == 1 && wlOpcode(message, 0) == 0 { emit 0 }
+        if wlObject(message, 0) == syncId && wlOpcode(message, 0) == 0 { emit used }
+        if wlObject(message, 0) == registry && wlOpcode(message, 0) == 0 {
+            if used + size > 65536 || size < 24 { emit 0 }
+            let stringSize = wlU32(message, 12)
+            if stringSize < 1 || 20 + _wlPad4(stringSize) != size { emit 0 }
+            let i = 0
+            while i < size {
+                bufSetByte(target, used + i, bufGetByte(message, i))
+                i += 1
+            }
+            used += size
+        }
+    }
+    emit 0
+}
+
+func brainWlEventText(message, size) {
+    if size < 12 { emit "" }
+    let length = wlU32(message, 8)
+    if length == 0 { emit "" }
+    if length > size - 12 || bufGetByte(message, 12 + length - 1) != 0 { emit "" }
+    emit wlTextInputEventText(message, 0)
+}
+
+
+func brainWlModifiers(depressed, latched, locked) {
+    let result = 0
+    let bit = 1
+    while bit <= 8 {
+        if depressed / bit % 2 == 1 || latched / bit % 2 == 1 || locked / bit % 2 == 1 {
+            result += bit
+        }
+        bit *= 2
+    }
+    emit result
+}
+
+
+// Raw syscall errors are negative machine words. Comparing them as generic
+// Krypton values can treat the word as a string pointer on older ELF backends.
+func brainWlSyscallFailed(value) {
+    let word = bufNew(8)
+    bufSetQwordAt(word, 0, value)
+    emit bufGetByte(word, 7) == 255
+}

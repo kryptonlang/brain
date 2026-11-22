@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Brain
+Comment=Krypton code editor
+Exec=brain %f
+Icon=brain
+Terminal=false
+Categories=Development;TextEditor;
+MimeType=text/plain;text/x-c;text/x-python;application/json;
+StartupWMClass=brain
