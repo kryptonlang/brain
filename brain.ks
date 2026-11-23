@@ -1490,10 +1490,7 @@ func rebuildRecentMenu(menu) {
 }
 func dirOf(p) { let n = len(p)  let i = n - 1  while i >= 0 { if p[i] == "/" { emit substring(p, 0, i) }  i = i - 1 }  emit p }
 
-func canonicalPath(path) {
-  let resolved = msg(nsString(path), "stringByResolvingSymlinksInPath")
-  emit msg(msg(resolved, "precomposedStringWithCanonicalMapping"), "UTF8String")
-}
+func canonicalPath(path) { emit msg(msg(nsString(path), "stringByResolvingSymlinksInPath"), "UTF8String") }
 func readableText(text) {
   if text == 0 { emit 0 }
   let nul = msg_2(cls("NSCharacterSet"), "characterSetWithRange:", 0, 1)

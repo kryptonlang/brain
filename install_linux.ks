@@ -22,8 +22,14 @@ just run {
     escaped = replace(escaped, "$", "\\$")
     escaped = replace(escaped, "`", "\\`")
     escaped = replace(escaped, "%", "%%")
+    // Desktop string values unescape once before Exec argument parsing.
+    escaped = replace(escaped, "\\", "\\\\")
     let desktop = readFile(root + "/packaging/brain-linux.desktop")
     desktop = replace(desktop, "Exec=brain %f", "Exec=\"" + escaped + "\" %f")
     writeFile(applications + "/brain.desktop", desktop)
+    if readFile(applications + "/brain.desktop") != desktop {
+        print("Could not write the Brain desktop entry.")
+        exit(1)
+    }
     print("Installed Brain in " + bin)
 }

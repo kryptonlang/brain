@@ -1,6 +1,6 @@
 # Brain feature list
 
-Updated: 2026-11-01. Keep this file current whenever a feature is added or changed.
+Updated: 2026-11-22. Keep this file current whenever a feature is added or changed.
 Implementation and remaining release checks are tracked separately in
 [RELEASE_READINESS.md](RELEASE_READINESS.md).
 
@@ -173,3 +173,15 @@ Full native regression verification remains in progress.
   packages remain Inactive until runtime support exists.
 - View menu and Command Center can select all sections. Returning to an editor
   tab or Find dismisses the Extensions page; sidebar toggles preserve the rail.
+
+
+## Linux preview
+
+- Native Wayland editor in Krypton with an Objective-K document model.
+- Single-file keyboard editing, Open, Save, Save As, external-change checks,
+  and unsaved quit protection, with a 64 KiB document limit.
+- Text-input-v3 input with a US ASCII fallback. The bitmap font uses placeholders
+  for non-ASCII glyphs while preserving document bytes.
+- Fragmented Wayland message handling and two reusable shared-memory buffers.
+- Linux x86_64 package builder and local desktop installer.
+- The Linux preview's remaining feature gaps are listed in README.md.

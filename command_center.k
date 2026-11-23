@@ -832,6 +832,9 @@ func commandCenterRegression(root) {
   regressionAssert(ccLocation("0") == 0 && ccLocation("2:no") == 0 && ccLocation("1:2:3") == 0, "Invalid line inputs rejected")
   let path = canonicalPath(root + "/symbols café.k")
   writeDocument(path, nsString("// func fake() {}\n/*\nfunc hidden() {}\n*/\nobjk object Counter {\n  method tick() -> int = counterTick\n}\nfunc counterTick(runtime, self) { emit 1 }\njust run { print(\"🦋\") }\n"))
+  // Resolve after creation so the fixture matches the filesystem's
+  // Unicode normalization, just as normal file navigation does.
+  path = canonicalPath(path)
   openTab(path)
   ccOpen("@counterTick")
   regressionAssert(cocoaArrayCount(cocoaGetAssocKey(appH(), "brain.picker.results")) == 1, "Symbol names filter independently of callback bodies")

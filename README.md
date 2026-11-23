@@ -36,7 +36,7 @@ kr install_linux.ks  # installs under ~/.local
 ```
 
 The build also creates `dist/brain-linux-x86_64.tar.gz`. A running Wayland
-compositor is required. Text-input-v3 supplies UTF-8 input where supported.
+compositor and GNU coreutils are required. Text-input-v3 supplies UTF-8 input where supported.
 The fallback keyboard map uses US ASCII, and the bitmap font displays
 non-ASCII characters as placeholders while retaining their bytes on save.
 Documents are limited to 64 KiB. Tabs, selection, clipboard, undo, the Explorer,

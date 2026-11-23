@@ -20,11 +20,12 @@ def string(value):
 def message(obj, opcode, body=b""):
     return struct.pack("<IHH", obj, opcode, len(body) + 8) + body
 
-def run(executable, with_seat):
+def run(executable, with_seat, with_input=True):
     with tempfile.TemporaryDirectory(prefix="brain-wayland-") as temporary:
         root = Path(temporary)
         fixture = root / "document's.txt"
         fixture.write_text("12345🦋\n")
+        expected = ("é" if with_input else "x") + "12345🦋\n"
         server = socket.socket(socket.AF_UNIX)
         server.bind(str(root / "wayland-test"))
         server.listen()
@@ -87,7 +88,9 @@ def run(executable, with_seat):
                         callback = values[0]
                         globals_ = [(10,"wl_compositor",4),(11,"wl_shm",1),(12,"xdg_wm_base",1)]
                         if with_seat:
-                            globals_ += [(13,"wl_seat",5),(14,"zwp_text_input_manager_v3",1)]
+                            globals_ += [(13,"wl_seat",5)]
+                            if with_input:
+                                globals_ += [(14,"zwp_text_input_manager_v3",1)]
                         for name, interface, version in globals_:
                             send(registry, 0, u32(name) + string(interface) + u32(version))
                         send(callback, 0, u32(0))
@@ -139,15 +142,21 @@ def run(executable, with_seat):
                         assert shared[80*stride:80*stride+4] == bytes([31,16,22,0]), "canvas color"
                         if not with_seat:
                             break
-                        assert keyboard and text_input
+                        assert keyboard
                         if frames == 1:
-                            send(text_input, 0, u32(surface))
+                            if with_input:
+                                assert text_input
+                                send(text_input, 0, u32(surface))
+                            else:
+                                stage = 1
+                                key(45)
+                                key(31,4)
                         elif stage == 1:
                             for attempt in range(300):
-                                if fixture.read_text() == "é12345🦋\n":
+                                if fixture.read_text() == expected:
                                     break
                                 time.sleep(.01)
-                            assert fixture.read_text() == "é12345🦋\n", fixture.read_bytes()
+                            assert fixture.read_text() == expected, fixture.read_bytes()
                             stage = 2
                             # Resize after releasing the compositor's reference.
                             send(attached, 0)
@@ -159,8 +168,11 @@ def run(executable, with_seat):
                                 send(attached, 0)
                                 continue
                             stage = 3
-                            send(text_input, 3, string("x"))
-                            send(text_input, 5, u32(input_commits))
+                            if with_input:
+                                send(text_input, 3, string("x"))
+                                send(text_input, 5, u32(input_commits))
+                            else:
+                                key(45)
                             # First quit is vetoed because the new edit is unsaved.
                             key(16,4)
                         elif stage == 3:
@@ -188,7 +200,7 @@ def run(executable, with_seat):
             assert app.returncode == 0, (app.returncode, output)
             if with_seat:
                 assert frames >= 4
-                assert fixture.read_text() == "é12345🦋\n"
+                assert fixture.read_text() == expected
             else:
                 assert "mapped and drew" in output
             print("PASS:", "fragmented Wayland input, UTF-8 edit/save, resize, buffer reuse, unsaved quit" if with_seat else "seatless compositor smoke")
@@ -204,4 +216,5 @@ def run(executable, with_seat):
 
 if __name__ == "__main__":
     run(str(Path(sys.argv[1]).resolve()), True)
+    run(str(Path(sys.argv[1]).resolve()), True, False)
     run(str(Path(sys.argv[1]).resolve()), False)
